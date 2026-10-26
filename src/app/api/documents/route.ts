@@ -95,6 +95,7 @@ export async function POST(request: NextRequest) {
       bgColor: bgColor,
       sellerName: sellerName.trim(),
       salesCount: 0,
+      storageType: 'google_drive',
       createdAt: new Date().toISOString(),
     };
 
