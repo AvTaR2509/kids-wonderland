@@ -31,8 +31,35 @@ export default function BuyModal({ document, onClose, onSuccess }: BuyModalProps
   const [isProcessing, setIsProcessing] = useState(false);
   const [completedOrder, setCompletedOrder] = useState<PurchaseOrder | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [downloadTriggered, setDownloadTriggered] = useState(false);
 
   if (!document) return null;
+
+  const triggerAutoDownload = (url: string, fileName: string) => {
+    try {
+      if (typeof window !== 'undefined') {
+        const doc = window.document;
+        const link = doc.createElement('a');
+        link.href = url;
+        link.download = fileName || 'worksheet.pdf';
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        doc.body.appendChild(link);
+        link.click();
+        setDownloadTriggered(true);
+        setTimeout(() => {
+          try {
+            doc.body.removeChild(link);
+          } catch {}
+        }, 500);
+      }
+    } catch {
+      if (typeof window !== 'undefined') {
+        window.open(url, '_blank');
+        setDownloadTriggered(true);
+      }
+    }
+  };
 
   const handlePay = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,6 +100,12 @@ export default function BuyModal({ document, onClose, onSuccess }: BuyModalProps
           localStorage.setItem('my_purchases', JSON.stringify(currentPurchases));
         } catch {
           // ignore
+        }
+
+        // Trigger Instant Automatic Download in user's phone or computer!
+        const fileUrl = data.downloadLink || data.order.downloadLink || document.webContentLink || document.webViewLink;
+        if (fileUrl) {
+          triggerAutoDownload(fileUrl, document.fileName || `${document.name}.pdf`);
         }
       } else {
         setErrorMsg(data.error || 'Payment process karne me dikkat aayi.');
@@ -128,8 +161,14 @@ export default function BuyModal({ document, onClose, onSuccess }: BuyModalProps
                   बधाई हो, {completedOrder.buyerName}! 🎉
                 </h2>
                 <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-                  <strong>{completedOrder.documentName}</strong> सफलतापूर्वक अनलॉक हो गई है। नीचे से तुरंत डाउनलोड करें!
+                  <strong>{completedOrder.documentName}</strong> सफलतापूर्वक अनलॉक हो गई है!
                 </p>
+              </div>
+
+              {/* Automatic download alert banner */}
+              <div className="p-3 bg-emerald-100/90 rounded-2xl border-2 border-emerald-400 text-xs font-black text-emerald-950 flex items-center justify-center gap-2 shadow-2xs">
+                <Download className="w-4 h-4 text-emerald-700 animate-bounce" />
+                <span>📥 PDF फाइल आपके फोन / कंप्यूटर में अपने आप डाउनलोड हो रही है!</span>
               </div>
 
               {/* Receipt info */}
