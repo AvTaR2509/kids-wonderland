@@ -131,15 +131,26 @@ export function getInitialSeedDocuments(): PDFDocument[] {
   ];
 }
 
+declare global {
+  var _inMemoryDocs: PDFDocument[] | undefined;
+}
+
+function getMemoryDocs(): PDFDocument[] {
+  if (!globalThis._inMemoryDocs) {
+    globalThis._inMemoryDocs = getInitialSeedDocuments();
+  }
+  return globalThis._inMemoryDocs;
+}
+
 export function getAllDocuments(): PDFDocument[] {
-  // On serverless (Netlify), always return seed data since we can't write to disk
   if (isServerless) {
-    return getInitialSeedDocuments();
+    return getMemoryDocs();
   }
   ensureDataDir();
   if (!fs.existsSync(DOCUMENTS_FILE)) {
     const seed = getInitialSeedDocuments();
     try { fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(seed, null, 2), 'utf-8'); } catch { /* ignore */ }
+    globalThis._inMemoryDocs = seed;
     return seed;
   }
   try {
@@ -148,17 +159,20 @@ export function getAllDocuments(): PDFDocument[] {
     if (docs.length === 0) {
       const seed = getInitialSeedDocuments();
       try { fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(seed, null, 2), 'utf-8'); } catch { /* ignore */ }
+      globalThis._inMemoryDocs = seed;
       return seed;
     }
-    return docs.map(d => ({
+    const formatted = docs.map(d => ({
       ...d,
       price: typeof d.price === 'number' ? d.price : 0,
       priceFormatted: d.priceFormatted || formatPrice(d.price || 0),
       salesCount: d.salesCount || 0,
     }));
+    globalThis._inMemoryDocs = formatted;
+    return formatted;
   } catch (error) {
     console.error('Error reading documents:', error);
-    return getInitialSeedDocuments();
+    return getMemoryDocs();
   }
 }
 
@@ -168,6 +182,7 @@ export function getDocumentById(id: string): PDFDocument | null {
 }
 
 export function saveAllDocuments(docs: PDFDocument[]): void {
+  globalThis._inMemoryDocs = docs;
   if (isServerless) return; // can't write on serverless
   ensureDataDir();
   try {
@@ -178,15 +193,17 @@ export function saveAllDocuments(docs: PDFDocument[]): void {
 }
 
 export function addDocument(doc: PDFDocument): PDFDocument {
-  const docs = getAllDocuments();
   const preparedDoc: PDFDocument = {
     ...doc,
     price: typeof doc.price === 'number' ? doc.price : 0,
     priceFormatted: doc.priceFormatted || formatPrice(doc.price || 0),
     salesCount: doc.salesCount || 0,
   };
-  docs.unshift(preparedDoc);
-  saveAllDocuments(docs);
+  const current = getMemoryDocs();
+  const filtered = current.filter(d => d.id !== preparedDoc.id);
+  filtered.unshift(preparedDoc);
+  globalThis._inMemoryDocs = filtered;
+  saveAllDocuments(filtered);
   return preparedDoc;
 }
 
@@ -200,11 +217,12 @@ export function incrementDocumentSales(id: string): void {
 }
 
 export function deleteDocument(id: string): PDFDocument | null {
-  const docs = getAllDocuments();
-  const index = docs.findIndex(d => d.id === id);
+  const current = getMemoryDocs();
+  const index = current.findIndex(d => d.id === id);
   if (index === -1) return null;
-  const [removed] = docs.splice(index, 1);
-  saveAllDocuments(docs);
+  const [removed] = current.splice(index, 1);
+  globalThis._inMemoryDocs = current;
+  saveAllDocuments(current);
   return removed;
 }
 

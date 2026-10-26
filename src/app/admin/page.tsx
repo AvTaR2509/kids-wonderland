@@ -146,11 +146,30 @@ export default function AdminPage() {
   const fetchDocuments = async () => {
     setLoadingDocs(true);
     try {
-      const res = await fetch('/api/documents');
+      const savedAppsScriptUrl = typeof window !== 'undefined' ? localStorage.getItem('kids_apps_script_url') || '' : '';
+      const query = savedAppsScriptUrl ? `?appsScriptUrl=${encodeURIComponent(savedAppsScriptUrl)}` : '';
+      const res = await fetch(`/api/documents${query}`);
       const data = await res.json();
-      if (data.success) {
-        setDocuments(data.documents || []);
+      let serverDocs: PDFDocument[] = data.success && data.documents ? data.documents : [];
+
+      let localDocs: PDFDocument[] = [];
+      try {
+        const stored = typeof window !== 'undefined' ? localStorage.getItem('kids_custom_documents') : null;
+        if (stored) localDocs = JSON.parse(stored);
+      } catch (e) {
+        console.error(e);
       }
+
+      const map = new Map<string, PDFDocument>();
+      for (const d of localDocs) {
+        if (d && d.id) map.set(d.id, d);
+      }
+      for (const d of serverDocs) {
+        if (d && d.id && !map.has(d.id)) {
+          map.set(d.id, d);
+        }
+      }
+      setDocuments(Array.from(map.values()));
     } catch (err) {
       console.error(err);
     } finally {
@@ -160,10 +179,16 @@ export default function AdminPage() {
 
   const fetchConfig = async () => {
     try {
+      const savedLocalUrl = typeof window !== 'undefined' ? localStorage.getItem('kids_apps_script_url') || '' : '';
       const res = await fetch('/api/config');
       const data = await res.json();
       if (data.success) {
-        setConfig(data.config);
+        const effectiveUrl = savedLocalUrl || data.config.appsScriptUrl || '';
+        setConfig({
+          ...data.config,
+          appsScriptUrl: effectiveUrl,
+          hasAppsScriptUrl: !!effectiveUrl,
+        });
         setTemplateScript(data.templateScript || '');
       }
     } catch (err) {
@@ -252,16 +277,35 @@ export default function AdminPage() {
       formData.append('sellerName', 'Kids WonderLand');
       formData.append('file', file);
 
+      const effectiveAppsScript = config.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('kids_apps_script_url') || '' : '');
+      if (effectiveAppsScript) {
+        formData.append('appsScriptUrl', effectiveAppsScript);
+      }
+
       const res = await fetch('/api/documents', {
         method: 'POST',
         body: formData,
       });
 
       const data = await res.json();
-      if (data.success) {
+      if (data.success && data.document) {
+        // Save to client localStorage so it always shows on Main Page
+        try {
+          const stored = localStorage.getItem('kids_custom_documents');
+          const existing: PDFDocument[] = stored ? JSON.parse(stored) : [];
+          const updated = [data.document, ...existing.filter(d => d.id !== data.document.id)];
+          localStorage.setItem('kids_custom_documents', JSON.stringify(updated));
+          window.dispatchEvent(new Event('worksheets-updated'));
+        } catch (e) {
+          console.error(e);
+        }
+
+        const isDrive = !!data.isGoogleDrive && !!data.document.webViewLink;
         setUploadMessage({
           type: 'success',
-          text: `"${name}" uploaded to Google Storage and published to Main Page successfully! 🎉`,
+          text: isDrive
+            ? `"${name}" safalta-purvak Google Drive me upload ho gaya aur Main Page par live add ho gaya! 🎉`
+            : `"${name}" Main Page par live publish ho gaya! (Tip: Google Drive me direct save karne ke liye Google Drive Settings me URL set karein).`,
           link: data.document.webViewLink,
         });
         setName('');
@@ -294,6 +338,14 @@ export default function AdminPage() {
       const data = await res.json();
       if (data.success) {
         setDocuments(prev => prev.filter(d => d.id !== doc.id));
+        try {
+          const stored = localStorage.getItem('kids_custom_documents');
+          if (stored) {
+            const list: PDFDocument[] = JSON.parse(stored);
+            localStorage.setItem('kids_custom_documents', JSON.stringify(list.filter(d => d.id !== doc.id)));
+            window.dispatchEvent(new Event('worksheets-updated'));
+          }
+        } catch (e) {}
       } else {
         alert(data.error || 'Failed to delete file.');
       }
@@ -309,12 +361,15 @@ export default function AdminPage() {
     e.preventDefault();
     setSavingConfig(true);
     try {
+      if (typeof window !== 'undefined' && config.appsScriptUrl) {
+        localStorage.setItem('kids_apps_script_url', config.appsScriptUrl.trim());
+      }
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode: 'apps_script',
-          appsScriptUrl: config.appsScriptUrl,
+          appsScriptUrl: config.appsScriptUrl.trim(),
           folderId: config.folderId,
         }),
       });
@@ -323,6 +378,7 @@ export default function AdminPage() {
         setConfigSuccess(true);
         setTimeout(() => setConfigSuccess(false), 3000);
         fetchConfig();
+        fetchDocuments();
       }
     } catch (err) {
       console.error(err);
@@ -514,37 +570,45 @@ export default function AdminPage() {
         </div>
 
         {/* Google Storage Status Banner */}
-        <div className="mb-8 p-4 rounded-2xl border border-slate-200 bg-white shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className={`mb-8 p-5 rounded-2xl border shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 ${
+          config.hasAppsScriptUrl 
+            ? 'border-emerald-300 bg-emerald-50/70' 
+            : 'border-amber-300 bg-amber-50/80'
+        }`}>
           <div className="flex items-center gap-3.5">
-            <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-              <Cloud className="w-5 h-5" />
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+              config.hasAppsScriptUrl 
+                ? 'bg-emerald-100 text-emerald-700' 
+                : 'bg-amber-200 text-amber-900'
+            }`}>
+              <Cloud className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h4 className="font-extrabold text-sm text-slate-900">Google Storage Backend:</h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="font-black text-sm text-slate-900">Google Drive Status:</h4>
                 {config.hasAppsScriptUrl ? (
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                    ● Connected to Your Google Drive
+                  <span className="px-3 py-1 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    🟢 Connected to Google Drive (PDFs seedhe Drive me jayengi)
                   </span>
                 ) : (
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                    Local Storage Active (Ready to link Google Drive)
+                  <span className="px-3 py-1 rounded-full text-xs font-black bg-amber-200 text-amber-900 border border-amber-400 animate-pulse">
+                    ⚠️ Google Drive Not Connected (Click Settings to Link)
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">
+              <p className="text-xs text-slate-600 mt-1">
                 {config.hasAppsScriptUrl
-                  ? 'All PDF uploads are automatically uploaded and stored into your Google Drive account.'
-                  : 'Files upload safely to storage. Click "Google Drive Settings" to link your personal Google Drive!'}
+                  ? 'Ab aap jo bhi PDF upload karenge, wo seedhe aapke Google Drive account me store hogi aur link live dikhega!'
+                  : 'Abhi files website par dikhengi lekin Drive me nahi jayengi. Google Drive se jodane ke liye "Google Drive Settings" par click karein.'}
               </p>
             </div>
           </div>
 
           <button
             onClick={() => setShowSettingsModal(true)}
-            className="text-xs font-bold text-pink-600 hover:text-pink-800 underline shrink-0"
+            className="px-4 py-2 rounded-xl text-xs font-black bg-slate-900 text-white hover:bg-slate-800 shadow-sm transition-all shrink-0"
           >
-            Configure Google Drive
+            ⚙️ Google Drive Settings
           </button>
         </div>
 
@@ -576,18 +640,35 @@ export default function AdminPage() {
               ) : (
                 <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
               )}
-              <div className="text-sm">
-                <p className="font-bold">{uploadMessage.text}</p>
-                {uploadMessage.link && (
-                  <a
-                    href={uploadMessage.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 font-bold text-pink-600 hover:underline mt-1 text-xs"
-                  >
-                    <span>View uploaded PDF file</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+              <div className="text-sm flex-1">
+                <p className="font-extrabold">{uploadMessage.text}</p>
+                {uploadMessage.link ? (
+                  <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                    <a
+                      href={uploadMessage.link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-xs transition-all"
+                    >
+                      <Cloud className="w-3.5 h-3.5" />
+                      <span>Google Drive me File Dekhein ↗</span>
+                    </a>
+                    <Link
+                      href="/"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-xs"
+                    >
+                      <span>Main Page par dekhein</span>
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="mt-2">
+                    <Link
+                      href="/"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-xs"
+                    >
+                      <span>Main Page par live dekhein ↗</span>
+                    </Link>
+                  </div>
                 )}
               </div>
             </div>
@@ -905,16 +986,22 @@ export default function AdminPage() {
                       </td>
 
                       {/* Storage */}
-                      <td className="px-4 py-4">
-                        {doc.storageType === 'google_drive' ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <Cloud className="w-3 h-3" />
-                            Google Drive
-                          </span>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        {doc.storageType === 'google_drive' || doc.googleDriveId ? (
+                          <a
+                            href={doc.webViewLink || (doc.googleDriveId ? `https://drive.google.com/file/d/${doc.googleDriveId}/view` : '#')}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200 transition-colors"
+                            title="Click to open file in Google Drive"
+                          >
+                            <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Google Drive ↗</span>
+                          </a>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                            <HardDrive className="w-3 h-3" />
-                            Local Storage
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                            <HardDrive className="w-3 h-3 text-amber-600" />
+                            <span>Browser / Local</span>
                           </span>
                         )}
                       </td>
@@ -1012,7 +1099,27 @@ export default function AdminPage() {
                   </p>
                 </div>
 
-                <div className="pt-2 flex justify-end">
+                <div className="pt-2 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!config.appsScriptUrl) {
+                        alert('Pehle Google Apps Script URL enter karein!');
+                        return;
+                      }
+                      try {
+                        const res = await fetch(config.appsScriptUrl);
+                        const data = await res.json();
+                        alert(`Google Drive Connection Successful! 🎉\nStatus: ${data.status || 'Active'}`);
+                      } catch (e) {
+                        alert('Connection Failed: Kripya check karein ki Google Apps Script deployment me "Who has access" = "Anyone" chuna hai ya nahi.');
+                      }
+                    }}
+                    className="px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-xs transition-all"
+                  >
+                    🔍 Test Connection
+                  </button>
+
                   <button
                     type="submit"
                     disabled={savingConfig}

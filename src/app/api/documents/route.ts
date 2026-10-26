@@ -3,12 +3,14 @@ import { getAllDocuments, addDocument, formatBytes, formatPrice } from '@/lib/st
 import { uploadPdfFile, fetchGoogleDocuments } from '@/lib/googleDrive';
 import { PDFDocument } from '@/lib/types';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const url = new URL(request.url);
+    const queryAppsScript = url.searchParams.get('appsScriptUrl') || '';
     const localDocs = getAllDocuments();
     let googleDocs: any[] = [];
     try {
-      googleDocs = await fetchGoogleDocuments();
+      googleDocs = await fetchGoogleDocuments(queryAppsScript);
     } catch {
       // ignore
     }
@@ -18,7 +20,7 @@ export async function GET() {
     for (const d of googleDocs) {
       if (d && d.id) docMap.set(d.id, d);
     }
-    // Add local seed docs if not duplicate
+    // Add local/memory docs if not duplicate
     for (const d of localDocs) {
       if (d && d.id && !docMap.has(d.id)) {
         docMap.set(d.id, d);
@@ -47,6 +49,7 @@ export async function POST(request: NextRequest) {
     const pageCountRaw = formData.get('pageCount');
     const pageCount = pageCountRaw ? parseInt(pageCountRaw.toString()) || 25 : 25;
     const sellerName = (formData.get('sellerName') as string) || 'Kids WonderLand';
+    const appsScriptUrl = (formData.get('appsScriptUrl') as string) || '';
     const file = formData.get('file') as File | null;
 
     if (!name || !name.trim()) {
@@ -100,14 +103,15 @@ export async function POST(request: NextRequest) {
     };
 
     // Upload to Google Drive (or local fallback) and persist metadata in Google Storage
-    const uploadResult = await uploadPdfFile(buffer, file.name, file.type || 'application/pdf', tempDoc);
+    const uploadResult = await uploadPdfFile(buffer, file.name, file.type || 'application/pdf', tempDoc, appsScriptUrl);
+    const isGoogleDrive = !!uploadResult.fileId;
 
     const newDoc: PDFDocument = {
       ...tempDoc,
       googleDriveId: uploadResult.fileId,
       webViewLink: uploadResult.webViewLink,
       webContentLink: uploadResult.webContentLink,
-      storageType: uploadResult.storageType,
+      storageType: isGoogleDrive ? 'google_drive' : 'local',
       localPath: uploadResult.localPath,
     };
 
@@ -115,7 +119,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: 'PDF uploaded to Google Storage & published live successfully!',
+      isGoogleDrive,
+      googleDriveId: uploadResult.fileId || null,
+      webViewLink: uploadResult.webViewLink || null,
+      message: isGoogleDrive
+        ? 'PDF successfully uploaded directly to your Google Drive and published live!'
+        : 'PDF published to website. (Tip: Set Google Drive URL in settings to store directly on your Google Drive account).',
       document: newDoc,
     });
   } catch (error) {

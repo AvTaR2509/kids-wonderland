@@ -53,11 +53,33 @@ export default function KidsHomePage() {
   const fetchWorksheets = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/documents');
+      const savedAppsScriptUrl = typeof window !== 'undefined' ? localStorage.getItem('kids_apps_script_url') || '' : '';
+      const query = savedAppsScriptUrl ? `?appsScriptUrl=${encodeURIComponent(savedAppsScriptUrl)}` : '';
+      const res = await fetch(`/api/documents${query}`);
       const data = await res.json();
-      if (data.success && data.documents) {
-        setDocuments(data.documents);
+      let serverDocs: PDFDocument[] = data.success && data.documents ? data.documents : [];
+
+      // Check localStorage for newly added documents on this browser
+      let localDocs: PDFDocument[] = [];
+      try {
+        const stored = typeof window !== 'undefined' ? localStorage.getItem('kids_custom_documents') : null;
+        if (stored) localDocs = JSON.parse(stored);
+      } catch (e) {
+        console.error(e);
       }
+
+      // Combine docs, custom docs taking precedence
+      const map = new Map<string, PDFDocument>();
+      for (const d of localDocs) {
+        if (d && d.id) map.set(d.id, d);
+      }
+      for (const d of serverDocs) {
+        if (d && d.id && !map.has(d.id)) {
+          map.set(d.id, d);
+        }
+      }
+      const combined = Array.from(map.values());
+      setDocuments(combined);
     } catch (err) {
       console.error('Failed to fetch worksheets:', err);
     } finally {
@@ -67,6 +89,14 @@ export default function KidsHomePage() {
 
   useEffect(() => {
     fetchWorksheets();
+
+    const handleStorageChange = () => fetchWorksheets();
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('worksheets-updated', handleStorageChange);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('worksheets-updated', handleStorageChange);
+    };
   }, []);
 
   // Play synthesized joyful sound using Web Audio API

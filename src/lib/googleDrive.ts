@@ -109,12 +109,14 @@ export async function uploadPdfFile(
   fileBuffer: Buffer,
   fileName: string,
   mimeType = 'application/pdf',
-  documentMeta?: any
+  documentMeta?: any,
+  overrideAppsScriptUrl?: string
 ): Promise<UploadResult> {
   const config = getDriveConfig();
+  const effectiveAppsScriptUrl = (overrideAppsScriptUrl && overrideAppsScriptUrl.trim()) || config.appsScriptUrl;
 
   // Mode 1: Google Apps Script Web App
-  if (config.mode === 'apps_script' && config.appsScriptUrl) {
+  if (effectiveAppsScriptUrl) {
     try {
       const base64Data = fileBuffer.toString('base64');
       const payload = {
@@ -126,7 +128,7 @@ export async function uploadPdfFile(
         documentMeta: documentMeta || null,
       };
 
-      const response = await fetch(config.appsScriptUrl, {
+      const response = await fetch(effectiveAppsScriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -250,11 +252,12 @@ export async function uploadPdfFile(
   }
 }
 
-export async function fetchGoogleDocuments(): Promise<any[]> {
+export async function fetchGoogleDocuments(overrideAppsScriptUrl?: string): Promise<any[]> {
   const config = getDriveConfig();
-  if (config.mode === 'apps_script' && config.appsScriptUrl) {
+  const effectiveUrl = (overrideAppsScriptUrl && overrideAppsScriptUrl.trim()) || config.appsScriptUrl;
+  if (effectiveUrl) {
     try {
-      const response = await fetch(config.appsScriptUrl, {
+      const response = await fetch(effectiveUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'list_documents' }),
