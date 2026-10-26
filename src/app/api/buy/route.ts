@@ -29,7 +29,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Document ID is required' }, { status: 400 });
     }
 
-    const doc = getDocumentById(documentId);
+    let doc = getDocumentById(documentId);
+    if (!doc && documentId === 'kids_mega_bundle') {
+      doc = {
+        id: 'kids_mega_bundle',
+        name: 'Jumbo Kids Mega Activity Bundle (All Workbooks)',
+        price: 99,
+        fileName: 'kids-jumbo-activity-bundle.pdf',
+        fileSize: 15000000,
+        fileSizeFormatted: '15.0 MB',
+        mimeType: 'application/pdf',
+        priceFormatted: '₹99',
+        info: 'Complete all-in-one bundle',
+        storageType: 'local',
+        createdAt: new Date().toISOString(),
+        webViewLink: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
+        webContentLink: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
+      };
+    }
     if (!doc) {
       return NextResponse.json({ success: false, error: 'Document not found' }, { status: 404 });
     }
