@@ -15,7 +15,7 @@ export async function DELETE(
     }
 
     // Delete from Google Drive or local storage
-    await deletePdfFile(doc.googleDriveId, doc.localPath);
+    await deletePdfFile(doc.googleDriveId, doc.localPath, id);
 
     // Remove from documents database
     const removed = deleteDocument(id);

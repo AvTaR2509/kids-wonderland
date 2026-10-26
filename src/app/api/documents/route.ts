@@ -1,12 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllDocuments, addDocument, formatBytes, formatPrice } from '@/lib/storage';
-import { uploadPdfFile } from '@/lib/googleDrive';
+import { uploadPdfFile, fetchGoogleDocuments } from '@/lib/googleDrive';
 import { PDFDocument } from '@/lib/types';
 
 export async function GET() {
   try {
-    const docs = getAllDocuments();
-    return NextResponse.json({ success: true, documents: docs });
+    const localDocs = getAllDocuments();
+    let googleDocs: any[] = [];
+    try {
+      googleDocs = await fetchGoogleDocuments();
+    } catch {
+      // ignore
+    }
+
+    const docMap = new Map<string, PDFDocument>();
+    // Add Google Docs first
+    for (const d of googleDocs) {
+      if (d && d.id) docMap.set(d.id, d);
+    }
+    // Add local seed docs if not duplicate
+    for (const d of localDocs) {
+      if (d && d.id && !docMap.has(d.id)) {
+        docMap.set(d.id, d);
+      }
+    }
+
+    const merged = Array.from(docMap.values());
+    return NextResponse.json({ success: true, documents: merged });
   } catch (error) {
     console.error('Error in GET /api/documents:', error);
     return NextResponse.json({ success: false, error: 'Failed to fetch documents' }, { status: 500 });
@@ -48,9 +68,6 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Upload to Google Drive (or local fallback)
-    const uploadResult = await uploadPdfFile(buffer, file.name, file.type || 'application/pdf');
-
     // Generate playful background gradient based on category
     let bgColor = 'from-amber-100 to-orange-100 border-amber-300';
     if (category === 'Writing') bgColor = 'from-sky-100 to-blue-100 border-sky-300';
@@ -59,7 +76,7 @@ export async function POST(request: NextRequest) {
     else if (category === 'Adventure' || category === 'Space') bgColor = 'from-purple-100 to-indigo-100 border-purple-300';
     else if (category === 'Stories') bgColor = 'from-yellow-100 to-lime-100 border-yellow-300';
 
-    const newDoc: PDFDocument = {
+    const tempDoc: PDFDocument = {
       id: 'doc_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       name: name.trim(),
       titleHindi: titleHindi.trim(),
@@ -78,12 +95,19 @@ export async function POST(request: NextRequest) {
       bgColor: bgColor,
       sellerName: sellerName.trim(),
       salesCount: 0,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Upload to Google Drive (or local fallback) and persist metadata in Google Storage
+    const uploadResult = await uploadPdfFile(buffer, file.name, file.type || 'application/pdf', tempDoc);
+
+    const newDoc: PDFDocument = {
+      ...tempDoc,
       googleDriveId: uploadResult.fileId,
       webViewLink: uploadResult.webViewLink,
       webContentLink: uploadResult.webContentLink,
       storageType: uploadResult.storageType,
       localPath: uploadResult.localPath,
-      createdAt: new Date().toISOString(),
     };
 
     addDocument(newDoc);

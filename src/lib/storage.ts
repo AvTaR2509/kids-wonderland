@@ -7,9 +7,16 @@ const DOCUMENTS_FILE = path.join(DATA_DIR, 'documents.json');
 const PURCHASES_FILE = path.join(DATA_DIR, 'purchases.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
+const isServerless = process.env.NETLIFY === 'true' || process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
+
 function ensureDataDir() {
+  if (isServerless) return; // filesystem is read-only on serverless
   if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    } catch {
+      // ignore on read-only filesystems
+    }
   }
 }
 
@@ -125,10 +132,14 @@ export function getInitialSeedDocuments(): PDFDocument[] {
 }
 
 export function getAllDocuments(): PDFDocument[] {
+  // On serverless (Netlify), always return seed data since we can't write to disk
+  if (isServerless) {
+    return getInitialSeedDocuments();
+  }
   ensureDataDir();
   if (!fs.existsSync(DOCUMENTS_FILE)) {
     const seed = getInitialSeedDocuments();
-    fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(seed, null, 2), 'utf-8');
+    try { fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(seed, null, 2), 'utf-8'); } catch { /* ignore */ }
     return seed;
   }
   try {
@@ -136,7 +147,7 @@ export function getAllDocuments(): PDFDocument[] {
     const docs = JSON.parse(content) as PDFDocument[];
     if (docs.length === 0) {
       const seed = getInitialSeedDocuments();
-      fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(seed, null, 2), 'utf-8');
+      try { fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(seed, null, 2), 'utf-8'); } catch { /* ignore */ }
       return seed;
     }
     return docs.map(d => ({
@@ -147,7 +158,7 @@ export function getAllDocuments(): PDFDocument[] {
     }));
   } catch (error) {
     console.error('Error reading documents:', error);
-    return [];
+    return getInitialSeedDocuments();
   }
 }
 
@@ -157,8 +168,13 @@ export function getDocumentById(id: string): PDFDocument | null {
 }
 
 export function saveAllDocuments(docs: PDFDocument[]): void {
+  if (isServerless) return; // can't write on serverless
   ensureDataDir();
-  fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(docs, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(docs, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Could not save documents (read-only filesystem):', err);
+  }
 }
 
 export function addDocument(doc: PDFDocument): PDFDocument {
@@ -208,34 +224,44 @@ export function getAllPurchases(): PurchaseOrder[] {
 }
 
 export function addPurchase(order: PurchaseOrder): PurchaseOrder {
+  if (isServerless) {
+    console.log('Purchase recorded (in-memory only on serverless):', order.id);
+    return order;
+  }
   ensureDataDir();
   const purchases = getAllPurchases();
   purchases.unshift(order);
-  fs.writeFileSync(PURCHASES_FILE, JSON.stringify(purchases, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(PURCHASES_FILE, JSON.stringify(purchases, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Could not save purchase:', err);
+  }
   incrementDocumentSales(order.documentId);
   return order;
 }
 
 export function getDriveConfig(): DriveConfig {
-  ensureDataDir();
   const envAppsScript = process.env.GOOGLE_APPS_SCRIPT_URL;
   const envClientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const envPrivateKey = process.env.GOOGLE_PRIVATE_KEY;
   const envFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
 
-  if (fs.existsSync(CONFIG_FILE)) {
-    try {
-      const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8')) as DriveConfig;
-      return {
-        mode: savedConfig.mode || (savedConfig.appsScriptUrl ? 'apps_script' : (savedConfig.clientEmail ? 'service_account' : 'local')),
-        appsScriptUrl: savedConfig.appsScriptUrl || envAppsScript || '',
-        clientEmail: savedConfig.clientEmail || envClientEmail || '',
-        privateKey: savedConfig.privateKey || envPrivateKey || '',
-        folderId: savedConfig.folderId || envFolderId || '',
-        adminSecret: savedConfig.adminSecret || process.env.ADMIN_SECRET || 'admin123',
-      };
-    } catch {
-      // ignore
+  if (!isServerless) {
+    ensureDataDir();
+    if (fs.existsSync(CONFIG_FILE)) {
+      try {
+        const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8')) as DriveConfig;
+        return {
+          mode: savedConfig.mode || (savedConfig.appsScriptUrl ? 'apps_script' : (savedConfig.clientEmail ? 'service_account' : 'local')),
+          appsScriptUrl: savedConfig.appsScriptUrl || envAppsScript || '',
+          clientEmail: savedConfig.clientEmail || envClientEmail || '',
+          privateKey: savedConfig.privateKey || envPrivateKey || '',
+          folderId: savedConfig.folderId || envFolderId || '',
+          adminSecret: savedConfig.adminSecret || process.env.ADMIN_SECRET || 'admin123',
+        };
+      } catch {
+        // ignore parse errors
+      }
     }
   }
 
@@ -250,12 +276,18 @@ export function getDriveConfig(): DriveConfig {
 }
 
 export function saveDriveConfig(config: Partial<DriveConfig>): DriveConfig {
-  ensureDataDir();
   const current = getDriveConfig();
   const updated: DriveConfig = {
     ...current,
     ...config,
   };
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+  if (!isServerless) {
+    ensureDataDir();
+    try {
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('Could not save config:', err);
+    }
+  }
   return updated;
 }

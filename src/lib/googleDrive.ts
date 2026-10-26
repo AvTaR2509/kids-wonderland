@@ -13,6 +13,8 @@ export const GOOGLE_APPS_SCRIPT_TEMPLATE = `// ---------------------------------
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
+    var props = PropertiesService.getScriptProperties();
+
     if (data.action === "upload") {
       var decoded = Utilities.base64Decode(data.base64Data);
       var blob = Utilities.newBlob(decoded, data.mimeType || "application/pdf", data.fileName || "document.pdf");
@@ -24,15 +26,51 @@ function doPost(e) {
         file = DriveApp.createFile(blob);
       }
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+      var fileId = file.getId();
+      var webViewLink = file.getUrl();
+      var webContentLink = "https://drive.google.com/uc?export=download&id=" + fileId;
+
+      // Save document record in Google Apps Script properties
+      if (data.documentMeta) {
+        var raw = props.getProperty("DOCUMENTS") || "[]";
+        var list = JSON.parse(raw);
+        var meta = data.documentMeta;
+        meta.googleDriveId = fileId;
+        meta.webViewLink = webViewLink;
+        meta.webContentLink = webContentLink;
+        meta.storageType = "google_drive";
+        list.unshift(meta);
+        props.setProperty("DOCUMENTS", JSON.stringify(list));
+      }
+
       return ContentService.createTextOutput(JSON.stringify({
         success: true,
-        fileId: file.getId(),
-        webViewLink: file.getUrl(),
-        webContentLink: "https://drive.google.com/uc?export=download&id=" + file.getId()
+        fileId: fileId,
+        webViewLink: webViewLink,
+        webContentLink: webContentLink
+      })).setMimeType(ContentService.MimeType.JSON);
+    } else if (data.action === "list_documents") {
+      var raw = props.getProperty("DOCUMENTS") || "[]";
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        documents: JSON.parse(raw)
       })).setMimeType(ContentService.MimeType.JSON);
     } else if (data.action === "delete") {
-      var fileToDelete = DriveApp.getFileById(data.fileId);
-      fileToDelete.setTrashed(true);
+      try {
+        if (data.fileId) {
+          var fileToDelete = DriveApp.getFileById(data.fileId);
+          fileToDelete.setTrashed(true);
+        }
+      } catch (errDel) {}
+
+      var rawDel = props.getProperty("DOCUMENTS") || "[]";
+      var listDel = JSON.parse(rawDel);
+      var filtered = listDel.filter(function(d) {
+        return d.id !== data.documentId && d.googleDriveId !== data.fileId;
+      });
+      props.setProperty("DOCUMENTS", JSON.stringify(filtered));
+
       return ContentService.createTextOutput(JSON.stringify({ success: true }))
         .setMimeType(ContentService.MimeType.JSON);
     }
@@ -45,8 +83,17 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ status: "Google Drive Backend is running!" }))
-    .setMimeType(ContentService.MimeType.JSON);
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var raw = props.getProperty("DOCUMENTS") || "[]";
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "Google Drive Backend is running!",
+      count: JSON.parse(raw).length
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "running" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
 }
 `;
 
@@ -61,7 +108,8 @@ export interface UploadResult {
 export async function uploadPdfFile(
   fileBuffer: Buffer,
   fileName: string,
-  mimeType = 'application/pdf'
+  mimeType = 'application/pdf',
+  documentMeta?: any
 ): Promise<UploadResult> {
   const config = getDriveConfig();
 
@@ -75,6 +123,7 @@ export async function uploadPdfFile(
         mimeType,
         base64Data,
         folderId: config.folderId || '',
+        documentMeta: documentMeta || null,
       };
 
       const response = await fetch(config.appsScriptUrl, {
@@ -159,37 +208,79 @@ export async function uploadPdfFile(
     }
   }
 
-  // Mode 3: Local Storage Fallback
-  const uniquePrefix = Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-  const safeName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-  const savedFileName = `${uniquePrefix}-${safeName}`;
-  const uploadDir = path.join(process.cwd(), 'public', 'uploads');
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+  // Mode 3: Local Storage Fallback (only in non-serverless / local dev)
+  // On Netlify / Vercel / serverless, filesystem is read-only — skip local storage
+  const isServerless = process.env.NETLIFY === 'true' || process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
+
+  if (isServerless) {
+    console.warn('Running on serverless platform — local file storage not available. Please configure Google Apps Script URL in Admin Panel.');
+    return {
+      webViewLink: '',
+      webContentLink: '',
+      storageType: 'local',
+    };
   }
 
-  const filePath = path.join(uploadDir, savedFileName);
-  fs.writeFileSync(filePath, fileBuffer);
+  try {
+    const uniquePrefix = Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const safeName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const savedFileName = `${uniquePrefix}-${safeName}`;
+    const uploadDir = path.join(process.cwd(), 'public', 'uploads');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
 
-  const localUrl = `/uploads/${savedFileName}`;
-  return {
-    webViewLink: localUrl,
-    webContentLink: localUrl,
-    storageType: 'local',
-    localPath: filePath,
-  };
+    const filePath = path.join(uploadDir, savedFileName);
+    fs.writeFileSync(filePath, fileBuffer);
+
+    const localUrl = `/uploads/${savedFileName}`;
+    return {
+      webViewLink: localUrl,
+      webContentLink: localUrl,
+      storageType: 'local',
+      localPath: filePath,
+    };
+  } catch (err) {
+    console.error('Local file storage failed:', err);
+    return {
+      webViewLink: '',
+      webContentLink: '',
+      storageType: 'local',
+    };
+  }
 }
 
-export async function deletePdfFile(fileId?: string, localPath?: string): Promise<boolean> {
+export async function fetchGoogleDocuments(): Promise<any[]> {
+  const config = getDriveConfig();
+  if (config.mode === 'apps_script' && config.appsScriptUrl) {
+    try {
+      const response = await fetch(config.appsScriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'list_documents' }),
+        redirect: 'follow',
+      });
+      const data = await response.json();
+      if (data.success && Array.isArray(data.documents)) {
+        return data.documents;
+      }
+    } catch (err) {
+      console.error('Error fetching documents from Apps Script:', err);
+    }
+  }
+  return [];
+}
+
+export async function deletePdfFile(fileId?: string, localPath?: string, documentId?: string): Promise<boolean> {
   const config = getDriveConfig();
 
   // Try Apps Script delete
-  if (fileId && config.mode === 'apps_script' && config.appsScriptUrl) {
+  if (config.mode === 'apps_script' && config.appsScriptUrl) {
     try {
       await fetch(config.appsScriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete', fileId }),
+        body: JSON.stringify({ action: 'delete', fileId: fileId || '', documentId: documentId || '' }),
         redirect: 'follow',
       });
       return true;
